@@ -1,0 +1,523 @@
+1. Goal / High-Level Design
+
+We want a Runpod Serverless endpoint that:
+
+Takes a DEM GeoTIFF (already in S3) from
+s3://dem-fill-serverless-file-store/to-process/
+
+Runs the dem-fill inpainting inference:
+
+python run.py -p test \
+  -c /workspace/shared/dem-fill/config/dem_completion.json \
+  --resume_state /workspace/shared/dem-fill/pretrained/20 \
+  --n_timestep 100 \
+  --input_img /tmp/input.tif \
+  [PLUS WHATEVER OUTPUT ARG YOUR SCRIPT EXPECTS]
+
+
+Writes the completed file to
+s3://dem-fill-serverless-file-store/completed/
+
+Returns a small JSON payload with the output location.
+
+Shuts down automatically (no idle pod billing).
+
+We’ll implement this as:
+
+A Docker image based on runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+
+That image:
+
+Clones StrikeLines/dem-fill
+
+Downloads and unzips the pretrained model into /workspace/shared/dem-fill/pretrained/20
+
+Installs Python requirements
+
+Exposes a handler.py as the Runpod serverless entrypoint
+
+Runpod Serverless endpoint configured with:
+
+GPU: 5090
+
+Working storage: ~200 GB
+
+Environment variables for S3 + any secrets
+
+2. Required Secrets / Config (placeholders)
+
+The coding agent must NOT hard-code secrets into source control. Use env vars.
+
+2.1. GitHub access
+
+We need read access to https://github.com/StrikeLines/dem-fill.
+
+Option A (preferred): make the repo public, no auth needed.
+Option B: pass a token as a build argument.
+
+Use a placeholder like:
+
+GITHUB_TOKEN → ghp_xxxxxxxxxxxxxxxxxxxxxxxx (user fills in)
+
+2.2. AWS S3 access
+
+Bucket:
+
+Name: dem-fill-serverless-file-store
+
+Region: us-east-1
+
+Prefixes:
+
+Input: to-process/
+
+Output: completed/
+
+IAM user (already created in AWS):
+
+AWS_ACCESS_KEY_ID → AKIA...
+
+AWS_SECRET_ACCESS_KEY → ...
+
+These will be set as environment variables on the Runpod serverless endpoint.
+
+3. IAM Policy (should already exist, here for reference)
+
+Custom policy attached to the IAM user used by Runpod:
+
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowListBucket",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::dem-fill-serverless-file-store"
+    },
+    {
+      "Sid": "AllowReadToProcess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::dem-fill-serverless-file-store/to-process/*"
+    },
+    {
+      "Sid": "AllowWriteCompleted",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::dem-fill-serverless-file-store/completed/*"
+    },
+    {
+      "Sid": "AllowReadCompleted",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": "arn:aws:s3:::dem-fill-serverless-file-store/completed/*"
+    }
+  ]
+}
+
+4. Project Layout (local)
+
+On the local machine where the coding agent works, create a new folder, e.g.:
+
+dem-fill-serverless/
+  Dockerfile
+  handler.py
+  client_example.py  (optional, but recommended)
+  README.md          (this doc can live here)
+
+
+We do not need to clone dem-fill here; the Dockerfile will clone it inside the image.
+
+5. Dockerfile
+
+Create Dockerfile in dem-fill-serverless/:
+
+FROM runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404
+
+# Basic setup
+WORKDIR /workspace
+
+# System deps you might need (GDAL, etc. – adjust if the repo needs more)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gdal-bin \
+        libgdal-dev \
+        unzip \
+        wget && \
+    rm -rf /var/lib/apt/lists/*
+
+# --- GitHub token build arg (if repo is private) ---
+ARG GITHUB_TOKEN
+ENV GITHUB_TOKEN=${GITHUB_TOKEN}
+
+# Clone dem-fill repo into /workspace/shared/dem-fill
+RUN mkdir -p /workspace/shared && \
+    cd /workspace/shared && \
+    if [ -n "$GITHUB_TOKEN" ]; then \
+      git clone https://StrikeLines:${GITHUB_TOKEN}@github.com/StrikeLines/dem-fill.git; \
+    else \
+      git clone https://github.com/StrikeLines/dem-fill.git; \
+    fi
+
+WORKDIR /workspace/shared/dem-fill
+
+# Download pretrained model as in the init script
+# (Mirror of your runpod_init.sh logic)
+RUN mkdir -p /workspace/shared/dem-fill/pretrained && \
+    cd /workspace/shared/dem-fill/pretrained && \
+    wget --no-check-certificate \
+      "https://drive.usercontent.google.com/download?id=1bgOoUduXz62M03OxOOV0WK1J7ylsgnYR&export=download&confirm=t&uuid=1c4eb783-6126-4132-9796-f35705b4d482" \
+      -O 20.zip && \
+    unzip 20.zip && \
+    rm 20.zip
+
+# Install Python requirements
+RUN pip install --no-cache-dir -r /workspace/shared/dem-fill/requirements.txt
+
+# Copy serverless handler into the image
+COPY handler.py /workspace/handler.py
+
+# Default command for Runpod serverless
+WORKDIR /workspace
+CMD ["python", "handler.py"]
+
+
+Notes:
+
+This Dockerfile essentially inlines your runpod_init.sh logic. 
+
+runpod_init
+
+If the Google Drive URL or unzip behavior changes, adjust accordingly.
+
+If dem-fill expects additional system packages, add them in the apt-get install line.
+
+6. Serverless Handler
+
+Create handler.py in dem-fill-serverless/:
+
+import os
+import subprocess
+import tempfile
+
+import boto3
+import runpod
+
+
+# --- Configuration via environment variables ---
+
+S3_BUCKET = os.environ.get("DEM_S3_BUCKET", "dem-fill-serverless-file-store")
+INPUT_PREFIX = os.environ.get("DEM_INPUT_PREFIX", "to-process/")
+OUTPUT_PREFIX = os.environ.get("DEM_OUTPUT_PREFIX", "completed/")
+
+AWS_REGION = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+
+# AWS creds come from:
+#   AWS_ACCESS_KEY_ID
+#   AWS_SECRET_ACCESS_KEY
+# which must be set in the Runpod serverless endpoint configuration.
+
+s3 = boto3.client(
+    "s3",
+    region_name=AWS_REGION,
+    aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY"),
+)
+
+
+def run_dem_inpainting(input_path: str, output_path: str):
+    """
+    Calls the dem-fill inference command, using the same settings
+    as in the original init script (adjust as needed).
+
+    Expected behavior:
+        - Reads input_path
+        - Writes output_path
+    """
+
+    # IMPORTANT:
+    # Adjust this command to match exactly what dem-fill expects.
+    # The example below assumes run.py can take an explicit output path.
+    # If run.py writes to a fixed location, you must adapt this accordingly.
+    cmd = [
+        "python",
+        "run.py",
+        "-p",
+        "test",
+        "-c",
+        "/workspace/shared/dem-fill/config/dem_completion.json",
+        "--resume_state",
+        "/workspace/shared/dem-fill/pretrained/20",
+        "--n_timestep",
+        "100",
+        "--input_img",
+        input_path,
+        # Example output arg (change to the real one used by your repo):
+        "--output_img",
+        output_path,
+    ]
+
+    # If the repo uses a different output flag (e.g. --save_path or --save_dir),
+    # update the above accordingly.
+
+    subprocess.check_call(cmd, cwd="/workspace/shared/dem-fill")
+
+
+def handler(event):
+    """
+    Expected event["input"] structure:
+
+    {
+      "filename": "my_tile_001.tif"
+    }
+
+    The file is assumed to be at:
+        s3://<bucket>/<INPUT_PREFIX>/<filename>
+
+    Output will be written to:
+        s3://<bucket>/<OUTPUT_PREFIX>/<filename>
+        (or with a suffix, if you prefer)
+    """
+
+    job_input = event.get("input") or {}
+    filename = job_input.get("filename")
+    if not filename:
+        raise ValueError("Missing 'filename' in event['input'].")
+
+    # S3 keys
+    input_key = f"{INPUT_PREFIX}{filename}"
+    output_key = f"{OUTPUT_PREFIX}{filename}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        local_in = os.path.join(tmpdir, "input.tif")
+        local_out = os.path.join(tmpdir, "output.tif")
+
+        # 1. Download input from S3
+        s3.download_file(S3_BUCKET, input_key, local_in)
+
+        # 2. Run DEM inpainting
+        run_dem_inpainting(local_in, local_out)
+
+        # 3. Upload output to S3
+        s3.upload_file(local_out, S3_BUCKET, output_key)
+
+    return {
+        "status": "ok",
+        "bucket": S3_BUCKET,
+        "input_key": input_key,
+        "output_key": output_key,
+        "filename": filename,
+    }
+
+
+runpod.serverless.start({"handler": handler})
+
+
+Important:
+The agent MUST verify the real CLI interface of run.py in the dem-fill repo and adjust:
+
+--output_img to whichever flag or behavior is actually used.
+
+If the script writes to a directory instead of a single file, adjust local_out logic accordingly.
+
+7. Build and Push the Docker Image
+
+From dem-fill-serverless/:
+
+7.1. Build
+
+If repo is public:
+
+docker build -t dem-fill-serverless:latest .
+
+
+If repo is private and you need a token:
+
+docker build \
+  --build-arg GITHUB_TOKEN=YOUR_GITHUB_TOKEN_HERE \
+  -t dem-fill-serverless:latest .
+
+7.2. Tag and push to a registry
+
+For example, GitHub Container Registry:
+
+# Log in to GHCR
+echo YOUR_GHCR_PAT | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+
+# Tag
+docker tag dem-fill-serverless:latest ghcr.io/YOUR_GITHUB_USERNAME/dem-fill-serverless:latest
+
+# Push
+docker push ghcr.io/YOUR_GITHUB_USERNAME/dem-fill-serverless:latest
+
+
+Substitute with whatever registry you actually use (Docker Hub, etc.).
+
+8. Create the Runpod Serverless Endpoint
+
+In the Runpod UI:
+
+Go to Serverless → Create Endpoint.
+
+Choose Custom Image, and enter the full image name, e.g.
+ghcr.io/YOUR_GITHUB_USERNAME/dem-fill-serverless:latest
+
+Set GPU to: NVIDIA 5090 (or the closest available match).
+
+Set vCPU / RAM / Disk big enough (e.g. disk 200 GB as you noted).
+
+Under Environment Variables, add:
+
+AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_ID
+AWS_SECRET_ACCESS_KEY=YOUR_SECRET_ACCESS_KEY
+AWS_DEFAULT_REGION=us-east-1
+
+DEM_S3_BUCKET=dem-fill-serverless-file-store
+DEM_INPUT_PREFIX=to-process/
+DEM_OUTPUT_PREFIX=completed/
+
+
+Save / deploy the endpoint.
+
+9. Example Client Call (from your machine)
+
+Assume:
+
+You’ve uploaded a file to
+s3://dem-fill-serverless-file-store/to-process/test_tile_001.tif
+
+Your Runpod endpoint ID is DEM_FILL_ENDPOINT_ID.
+
+You have a Runpod API key: RUNPOD_API_KEY.
+
+9.1. Simple curl
+curl -X POST \
+  https://api.runpod.ai/v2/DEM_FILL_ENDPOINT_ID/run \
+  -H "Authorization: Bearer RUNPOD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "filename": "test_tile_001.tif"
+    }
+  }'
+
+
+Response (example):
+
+{
+  "status": "ok",
+  "bucket": "dem-fill-serverless-file-store",
+  "input_key": "to-process/test_tile_001.tif",
+  "output_key": "completed/test_tile_001.tif",
+  "filename": "test_tile_001.tif"
+}
+
+9.2. Optional: client_example.py
+
+Create client_example.py:
+
+import os
+import json
+import time
+
+import boto3
+import requests
+from botocore.exceptions import ClientError
+
+
+RUNPOD_API_KEY = os.environ["RUNPOD_API_KEY"]
+RUNPOD_ENDPOINT_ID = os.environ["RUNPOD_ENDPOINT_ID"]
+
+S3_BUCKET = "dem-fill-serverless-file-store"
+S3_INPUT_PREFIX = "to-process/"
+S3_OUTPUT_PREFIX = "completed/"
+
+AWS_REGION = "us-east-1"
+
+
+def upload_to_process(local_path: str, filename: str):
+    s3 = boto3.client("s3", region_name=AWS_REGION)
+    key = f"{S3_INPUT_PREFIX}{filename}"
+    s3.upload_file(local_path, S3_BUCKET, key)
+    return key
+
+
+def trigger_job(filename: str):
+    url = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
+
+    headers = {
+        "Authorization": f"Bearer {RUNPOD_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {"input": {"filename": filename}}
+
+    resp = requests.post(url, headers=headers, data=json.dumps(payload))
+    resp.raise_for_status()
+    return resp.json()
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("local_input", help="Path to local GeoTIFF to upload and process")
+    parser.add_argument("--filename", help="Filename to use in S3", default=None)
+    args = parser.parse_args()
+
+    local_input = args.local_input
+    filename = args.filename or os.path.basename(local_input)
+
+    print(f"Uploading {local_input} to s3://{S3_BUCKET}/{S3_INPUT_PREFIX}{filename}")
+    upload_to_process(local_input, filename)
+
+    print("Triggering Runpod serverless job...")
+    result = trigger_job(filename)
+    print("Serverless result:", json.dumps(result, indent=2))
+
+    # Output will be at:
+    print(f"Completed file should be at: s3://{S3_BUCKET}/{S3_OUTPUT_PREFIX}{filename}")
+
+
+Set env vars locally:
+
+export RUNPOD_API_KEY=YOUR_RUNPOD_API_KEY
+export RUNPOD_ENDPOINT_ID=DEM_FILL_ENDPOINT_ID
+export AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_ID
+export AWS_SECRET_ACCESS_KEY=YOUR_SECRET_ACCESS_KEY
+export AWS_DEFAULT_REGION=us-east-1
+
+
+Then:
+
+python client_example.py /path/to/local_dem.tif --filename my_test_tile.tif
+
+10. Security / Cleanup Notes
+
+Do not commit secrets (GitHub token, AWS keys, Runpod API key) into Git.
+
+The actual values of the keys should be:
+
+Entered as env vars for local dev
+
+Entered in the Runpod Serverless “Environment Variables” UI for production.
+
+The runpod_init.sh that contains the old GitHub PAT and AWS keys should be treated as compromised and those secrets should be rotated (new token, new keys). 
+
+runpod_init
+
+This doc should be enough for the coding agent to:
+
+Create Dockerfile, handler.py, client_example.py.
+
+Build and push the image.
+
+Configure the Runpod Serverless endpoint.
+
+Run end-to-end DEM inpainting on S3-hosted rasters with no idle pod billing.

@@ -1,0 +1,24 @@
+# System dependencies (GDAL + image libraries)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gdal-bin \
+        libgdal-dev \
+        libgeos-dev \
+        libproj-dev \
+        libspatialindex-dev \
+        libopencv-dev \
+        python3-opencv \
+        unzip \
+        wget && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set GDAL environment for rasterio/GDAL compatibility
+ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
+ENV C_INCLUDE_PATH=/usr/include/gdal
+ENV GDAL_DATA=/usr/share/gdal
+
+# Copy your requirements.txt
+COPY requirements.txt /workspace/requirements.txt
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r /workspace/requirements.txt

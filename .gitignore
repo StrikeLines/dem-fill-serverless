@@ -1,0 +1,50 @@
+# Environment variables and secrets
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+
+# Operating system
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Test files
+test_*.tif
+test_*.tiff
+*.geotiff
+
+# AWS
+.aws/
+
+# Local test data
+test_data/
+sample_files/
