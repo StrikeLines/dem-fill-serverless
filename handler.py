@@ -48,7 +48,9 @@ def run_dem_inpainting(input_path: str, output_dir: str) -> str:
     logger.info(f"Input directory contents: {os.listdir(os.path.dirname(input_path))}")
     
     # Use the original filename for output
-    expected_output_path = os.path.join(output_dir, os.path.basename(input_path))
+    # The dem-fill script appends "_processed" to the filename
+    name, ext = os.path.splitext(os.path.basename(input_path))
+    expected_output_path = os.path.join(output_dir, f"{name}_processed{ext}")
     
     logger.info(f"Expected output path in run_dem_inpainting: {expected_output_path}")
     logger.info(f"Output directory exists: {os.path.exists(output_dir)}")
@@ -87,7 +89,7 @@ def run_dem_inpainting(input_path: str, output_dir: str) -> str:
         logger.info(f"stdout: {result.stdout}")
         logger.info(f"Expected output directory contents: {os.listdir(output_dir)}")
         
-        return result
+        return expected_output_path
         
     except subprocess.CalledProcessError as e:
         logger.error(f"DEM inpainting failed with return code {e.returncode}")
@@ -150,7 +152,9 @@ def handler(event):
             processed_file = run_dem_inpainting(local_in, output_dir)
 
             # Use original filename for output
-            expected_output_path = os.path.join(output_dir, filename)
+            # The dem-fill script appends "_processed" to the filename
+            name, ext = os.path.splitext(filename)
+            expected_output_path = os.path.join(output_dir, f"{name}_processed{ext}")
             
             logger.info(f"Expected output path: {expected_output_path}")
             logger.info(f"Contents of output directory after inference: {os.listdir(output_dir)}")
