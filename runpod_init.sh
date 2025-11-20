@@ -8,7 +8,7 @@ echo "Starting RunPod initialization..."
 cd /workspace/shared
 
 # Clone the repository with authentication
-git clone https://StrikeLines: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@github.com/StrikeLines/dem-fill.git
+git clone https://StrikeLines:@github.com/StrikeLines/dem-fill.git
 
 # Navigate into the cloned repository
 echo "Entering dem-fill directory..."
@@ -48,10 +48,10 @@ The rest of the Python machine learning stack
 
 
 ### S3 Bucket Config ###
-S3 Bucket ID: 823878c20ad3fb98020f8b772927ccbb0a0f1ecb986b8595d7c4da045134613b
+S3 Bucket ID: 
 US East (N. Virginia) us-east-1
-Access key: AKIA2YJKTW6TG42NCPBM
-Secret Access Key: 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
+Access key: 
+Secret Access Key: /
 the "completed" folder is here: s3://dem-fill-serverless-file-store/completed/ 
 The "to-process" folder is here s3://dem-fill-serverless-file-store/to-process/
 
