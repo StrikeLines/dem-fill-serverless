@@ -115,8 +115,9 @@ def handler(event):
             raise ValueError("Missing 'filename' in event['input'].")
 
         # S3 keys
-        input_key = f"{INPUT_PREFIX}{filename}"
-        output_key = f"{OUTPUT_PREFIX}{filename}"
+        # INPUT_PREFIX and OUTPUT_PREFIX already include trailing slashes from env vars
+        input_key = f"{INPUT_PREFIX.rstrip('/')}/{filename}"
+        output_key = f"{OUTPUT_PREFIX.rstrip('/')}/{filename}"
 
         logger.info(f"Processing file: {filename}")
         logger.info(f"Input S3 key: {input_key}")
