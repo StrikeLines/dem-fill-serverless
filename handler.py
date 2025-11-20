@@ -134,7 +134,7 @@ def handler(event):
         with tempfile.TemporaryDirectory() as tmpdir:
             # Set up input and output paths
             local_in = os.path.join(tmpdir, filename)  # Keep original filename
-            output_dir = os.path.abspath(os.path.join(tmpdir, "output"))  # Use absolute path
+            output_dir = os.path.join(tmpdir, "output")  # Keep output in temp dir
             os.makedirs(output_dir, exist_ok=True)
 
             logger.info("Downloading input file from S3...")
