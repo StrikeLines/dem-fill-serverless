@@ -32,22 +32,25 @@ s3 = boto3.client(
 )
 
 
-def run_dem_inpainting(input_path: str, output_path: str):
+def run_dem_inpainting(input_path: str, output_dir: str) -> str:
     """
     Calls the dem-fill inference command, using the same settings
     as in the original init script.
 
     Expected behavior:
         - Reads input_path
-        - Writes output_path
-    
-    Note: This command may need adjustment based on the actual dem-fill CLI interface.
-    The current implementation assumes an --output_img parameter exists.
+        - Creates processed file in output_dir with "_processed.tif" suffix
+        - Returns the path to the processed file
     """
     
     logger.info(f"Running DEM inpainting on {input_path}")
     
-    # Command based on the specification - may need adjustment
+    # Calculate expected output filename (input_base + "_processed.tif")
+    input_basename = os.path.splitext(os.path.basename(input_path))[0]
+    expected_output_name = f"{input_basename}_processed.tif"
+    expected_output_path = os.path.join(output_dir, expected_output_name)
+    
+    # Command with correct output_dir_name parameter
     cmd = [
         "python",
         "run.py",
@@ -61,9 +64,8 @@ def run_dem_inpainting(input_path: str, output_path: str):
         "100",
         "--input_img",
         input_path,
-        # Note: This output argument may need to be adjusted based on actual dem-fill interface
-        "--output_img",
-        output_path,
+        "--output_dir_name",
+        output_dir
     ]
 
     logger.info(f"Executing command: {' '.join(cmd)}")
@@ -124,8 +126,10 @@ def handler(event):
         logger.info(f"Output S3 key: {output_key}")
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            # Set up input and output paths
             local_in = os.path.join(tmpdir, "input.tif")
-            local_out = os.path.join(tmpdir, "output.tif")
+            output_dir = os.path.join(tmpdir, "output")
+            os.makedirs(output_dir, exist_ok=True)
 
             logger.info("Downloading input file from S3...")
             # 1. Download input from S3
@@ -134,16 +138,22 @@ def handler(event):
 
             # 2. Run DEM inpainting
             logger.info("Starting DEM inpainting inference...")
-            run_dem_inpainting(local_in, local_out)
+            processed_file = run_dem_inpainting(local_in, output_dir)
+
+            # Calculate expected output path
+            input_basename = os.path.splitext(filename)[0]
+            expected_output_name = f"{input_basename}_processed.tif"
+            expected_output_path = os.path.join(output_dir, expected_output_name)
 
             # Verify output file exists
-            if not os.path.exists(local_out):
-                raise RuntimeError(f"Output file {local_out} was not created by inference")
+            if not os.path.exists(expected_output_path):
+                raise RuntimeError(f"Expected output file {expected_output_path} was not created by inference")
 
             # 3. Upload output to S3
             logger.info("Uploading result to S3...")
-            s3.upload_file(local_out, S3_BUCKET, output_key)
-            logger.info(f"Uploaded {local_out} to {output_key}")
+            output_key = f"{OUTPUT_PREFIX}{expected_output_name}"
+            s3.upload_file(expected_output_path, S3_BUCKET, output_key)
+            logger.info(f"Uploaded {expected_output_path} to {output_key}")
 
         result = {
             "status": "success",
