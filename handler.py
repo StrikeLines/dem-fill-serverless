@@ -44,11 +44,14 @@ def run_dem_inpainting(input_path: str, output_dir: str) -> str:
     """
     
     logger.info(f"Running DEM inpainting on {input_path}")
+    logger.info(f"Input file exists: {os.path.exists(input_path)}")
+    logger.info(f"Input directory contents: {os.listdir(os.path.dirname(input_path))}")
     
-    # Calculate expected output filename (input_base + "_processed.tif")
-    input_basename = os.path.splitext(os.path.basename(input_path))[0]
-    expected_output_name = f"{input_basename}_processed.tif"
-    expected_output_path = os.path.join(output_dir, expected_output_name)
+    # Use the original filename for output
+    expected_output_path = os.path.join(output_dir, os.path.basename(input_path))
+    
+    logger.info(f"Expected output path in run_dem_inpainting: {expected_output_path}")
+    logger.info(f"Output directory exists: {os.path.exists(output_dir)}")
     
     # Command with correct output_dir_name parameter
     cmd = [
@@ -81,7 +84,8 @@ def run_dem_inpainting(input_path: str, output_dir: str) -> str:
         )
         
         logger.info("DEM inpainting completed successfully")
-        logger.debug(f"stdout: {result.stdout}")
+        logger.info(f"stdout: {result.stdout}")
+        logger.info(f"Expected output directory contents: {os.listdir(output_dir)}")
         
         return result
         
@@ -127,7 +131,7 @@ def handler(event):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             # Set up input and output paths
-            local_in = os.path.join(tmpdir, "input.tif")
+            local_in = os.path.join(tmpdir, filename)  # Keep original filename
             output_dir = os.path.join(tmpdir, "output")
             os.makedirs(output_dir, exist_ok=True)
 
@@ -135,15 +139,21 @@ def handler(event):
             # 1. Download input from S3
             s3.download_file(S3_BUCKET, input_key, local_in)
             logger.info(f"Downloaded {input_key} to {local_in}")
+            logger.info(f"Local input file exists: {os.path.exists(local_in)}")
 
             # 2. Run DEM inpainting
             logger.info("Starting DEM inpainting inference...")
+            logger.info(f"Input file path: {local_in}")
+            logger.info(f"Output directory: {output_dir}")
+            logger.info(f"Contents of output directory before inference: {os.listdir(output_dir)}")
+            
             processed_file = run_dem_inpainting(local_in, output_dir)
 
-            # Calculate expected output path
-            input_basename = os.path.splitext(filename)[0]
-            expected_output_name = f"{input_basename}_processed.tif"
-            expected_output_path = os.path.join(output_dir, expected_output_name)
+            # Use original filename for output
+            expected_output_path = os.path.join(output_dir, filename)
+            
+            logger.info(f"Expected output path: {expected_output_path}")
+            logger.info(f"Contents of output directory after inference: {os.listdir(output_dir)}")
 
             # Verify output file exists
             if not os.path.exists(expected_output_path):
@@ -151,9 +161,12 @@ def handler(event):
 
             # 3. Upload output to S3
             logger.info("Uploading result to S3...")
-            output_key = f"{OUTPUT_PREFIX}{expected_output_name}"
+            output_key = f"{OUTPUT_PREFIX}{filename}"  # Use original filename
+            logger.info(f"Uploading from local path: {expected_output_path}")
+            logger.info(f"Uploading to S3 bucket: {S3_BUCKET}")
+            logger.info(f"Uploading to S3 key: {output_key}")
             s3.upload_file(expected_output_path, S3_BUCKET, output_key)
-            logger.info(f"Uploaded {expected_output_path} to {output_key}")
+            logger.info(f"Successfully uploaded {expected_output_path} to s3://{S3_BUCKET}/{output_key}")
 
         result = {
             "status": "success",
