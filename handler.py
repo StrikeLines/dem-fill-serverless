@@ -32,14 +32,14 @@ s3 = boto3.client(
 )
 
 
-def run_dem_inpainting(input_path: str, output_dir: str) -> str:
+def run_dem_inpainting(input_path: str, output_dir: str = None) -> str:
     """
     Calls the dem-fill inference command, using the same settings
     as in the original init script.
 
     Expected behavior:
         - Reads input_path
-        - Creates processed file in output_dir with "_processed.tif" suffix
+        - Creates processed file in ./output directory with "_processed.tif" suffix
         - Returns the path to the processed file
     """
     
@@ -47,15 +47,14 @@ def run_dem_inpainting(input_path: str, output_dir: str) -> str:
     logger.info(f"Input file exists: {os.path.exists(input_path)}")
     logger.info(f"Input directory contents: {os.listdir(os.path.dirname(input_path))}")
     
-    # Use the original filename for output
-    # The dem-fill script appends "_processed" to the filename
+    # The dem-fill script now standardizes output to ./output directory
+    # and appends "_processed" to the filename
     name, ext = os.path.splitext(os.path.basename(input_path))
-    expected_output_path = os.path.join(output_dir, f"{name}_processed{ext}")
+    expected_output_path = os.path.join("/workspace/shared/dem-fill/output", f"{name}_processed{ext}")
     
     logger.info(f"Expected output path in run_dem_inpainting: {expected_output_path}")
-    logger.info(f"Output directory exists: {os.path.exists(output_dir)}")
     
-    # Command with correct output_dir_name parameter
+    # Command without output_dir_name parameter as it now uses standardized ./output directory
     cmd = [
         "python",
         "run.py",
@@ -68,9 +67,7 @@ def run_dem_inpainting(input_path: str, output_dir: str) -> str:
         "--n_timestep",
         "100",
         "--input_img",
-        input_path,
-        "--output_dir_name",
-        output_dir
+        input_path
     ]
 
     logger.info(f"Executing command: {' '.join(cmd)}")
@@ -78,7 +75,7 @@ def run_dem_inpainting(input_path: str, output_dir: str) -> str:
     try:
         # Run the command from the dem-fill directory
         result = subprocess.run(
-            cmd, 
+            cmd,
             cwd="/workspace/shared/dem-fill",
             capture_output=True,
             text=True,
@@ -87,7 +84,13 @@ def run_dem_inpainting(input_path: str, output_dir: str) -> str:
         
         logger.info("DEM inpainting completed successfully")
         logger.info(f"stdout: {result.stdout}")
-        logger.info(f"Expected output directory contents: {os.listdir(output_dir)}")
+        
+        # Check if output directory exists
+        output_dir_path = "/workspace/shared/dem-fill/output"
+        if os.path.exists(output_dir_path):
+            logger.info(f"Output directory contents: {os.listdir(output_dir_path)}")
+        else:
+            logger.warning(f"Output directory {output_dir_path} does not exist")
         
         return expected_output_path
         
@@ -132,10 +135,8 @@ def handler(event):
         logger.info(f"Output S3 key: {output_key}")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Set up input and output paths
+            # Set up input path
             local_in = os.path.join(tmpdir, filename)  # Keep original filename
-            output_dir = os.path.join(tmpdir, "output")  # Keep output in temp dir
-            os.makedirs(output_dir, exist_ok=True)
 
             logger.info("Downloading input file from S3...")
             # 1. Download input from S3
@@ -146,18 +147,24 @@ def handler(event):
             # 2. Run DEM inpainting
             logger.info("Starting DEM inpainting inference...")
             logger.info(f"Input file path: {local_in}")
-            logger.info(f"Output directory: {output_dir}")
-            logger.info(f"Contents of output directory before inference: {os.listdir(output_dir)}")
             
-            processed_file = run_dem_inpainting(local_in, output_dir)
-
-            # Use original filename for output
-            # The dem-fill script appends "_processed" to the filename
+            # Run inference - output will be in standardized location
+            processed_file = run_dem_inpainting(local_in)
+            
+            # The processed file will be in the standardized output directory
+            # with "_processed" appended to the filename
             name, ext = os.path.splitext(filename)
-            expected_output_path = os.path.join(output_dir, f"{name}_processed{ext}")
+            processed_filename = f"{name}_processed{ext}"
+            expected_output_path = f"/workspace/shared/dem-fill/output/{processed_filename}"
             
             logger.info(f"Expected output path: {expected_output_path}")
-            logger.info(f"Contents of output directory after inference: {os.listdir(output_dir)}")
+            
+            # Check if output directory exists
+            output_dir_path = "/workspace/shared/dem-fill/output"
+            if os.path.exists(output_dir_path):
+                logger.info(f"Output directory contents: {os.listdir(output_dir_path)}")
+            else:
+                logger.warning(f"Output directory {output_dir_path} does not exist")
 
             # Verify output file exists
             if not os.path.exists(expected_output_path):
@@ -165,7 +172,8 @@ def handler(event):
 
             # 3. Upload output to S3
             logger.info("Uploading result to S3...")
-            output_key = f"{OUTPUT_PREFIX}{filename}"  # Use original filename
+            # Use processed filename for the output key to indicate it's been processed
+            output_key = f"{OUTPUT_PREFIX}{processed_filename}"
             logger.info(f"Uploading from local path: {expected_output_path}")
             logger.info(f"Uploading to S3 bucket: {S3_BUCKET}")
             logger.info(f"Uploading to S3 key: {output_key}")
@@ -178,7 +186,8 @@ def handler(event):
             "bucket": S3_BUCKET,
             "input_key": input_key,
             "output_key": output_key,
-            "filename": filename,
+            "input_filename": filename,
+            "output_filename": processed_filename,
         }
         
         logger.info(f"Job completed successfully: {result}")
